@@ -13,7 +13,6 @@ parameters:
 
 steps:
 - checkout: self
-  displayName: 'Checkout Repository'
 
 - task: TerraformInstaller@1
   displayName: 'Install Terraform'
@@ -42,7 +41,7 @@ steps:
     commandOptions: '-out=tfplan -detailed-exitcode'
 
 - task: TerraformTaskV4@4
-  displayName: 'Terraform Show'
+  displayName: 'Generate Plan Summary'
   inputs:
     provider: 'azurerm'
     command: 'show'
@@ -123,7 +122,11 @@ steps:
                 Start-Sleep -Seconds $retryInterval
               }
             }
+          } else {
+            Write-Host "⚠️ Traffic Manager FQDN not found in outputs, skipping health check"
           }
+        } else {
+          Write-Host "⚠️ Terraform outputs file not found, skipping health check"
         }
 
 - task: Bash@3
