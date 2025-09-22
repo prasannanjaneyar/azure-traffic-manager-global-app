@@ -18,7 +18,7 @@ resource "azurerm_service_plan" "main" {
   tags = var.tags
 }
 
-# App Service
+# App Service - Linux
 resource "azurerm_linux_web_app" "main" {
   count               = var.os_type == "Linux" ? 1 : 0
   name                = "${var.prefix}-app"
@@ -31,8 +31,8 @@ resource "azurerm_linux_web_app" "main" {
     application_stack {
       node_version = var.node_version
     }
-    health_check_path                 = var.health_check_path
-    health_check_grace_period_seconds = 300
+    health_check_path = var.health_check_path
+    # Removed: health_check_grace_period_seconds = 300
   }
 
   app_settings = var.app_settings
@@ -46,6 +46,7 @@ resource "azurerm_linux_web_app" "main" {
   tags = var.tags
 }
 
+# App Service - Windows  
 resource "azurerm_windows_web_app" "main" {
   count               = var.os_type == "Windows" ? 1 : 0
   name                = "${var.prefix}-app"
@@ -60,6 +61,7 @@ resource "azurerm_windows_web_app" "main" {
       current_stack = "node"
       node_version  = var.node_version
     }
+    # Removed: health_check_grace_period_seconds = 300
   }
 
   app_settings = var.app_settings
