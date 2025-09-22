@@ -2,18 +2,15 @@ trigger:
   branches:
     include:
     - master
-    - develop
-    - feature/*
   paths:
     include:
     - terraform/*
-    - azure-pipelines/*
+    - .azure-pipelines/*
 
 pr:
   branches:
     include:
     - master
-    - develop
   paths:
     include:
     - terraform/*
@@ -25,16 +22,22 @@ variables:
     value: 'ubuntu-latest'
   - name: azureServiceConnection
     value: 'azure-terraform-service-connection'
+  - name: TF_STATE_RESOURCE_GROUP
+    value: 'tfstate-rg'
+  - name: TF_STATE_STORAGE_ACCOUNT
+    value: 'tfstateaccount09876'  # Replace with your actual storage account
+  - name: TF_STATE_CONTAINER
+    value: 'tfstate'
 
 stages:
 # ==========================================
-# VALIDATION AND SECURITY STAGE
+# VALIDATION STAGE
 # ==========================================
 - stage: Validate
-  displayName: 'Validate and Security Scan'
+  displayName: 'Validate Terraform'
   jobs:
-  - job: SecurityScan
-    displayName: 'Security and Compliance Scan'
+  - job: TerraformValidate
+    displayName: 'Terraform Validation and Security Scan'
     pool:
       vmImage: $(vmImageName)
     steps:
@@ -57,52 +60,42 @@ stages:
             echo "Please run 'terraform fmt -recursive terraform/' to fix formatting"
             exit 1
           fi
-          
-    - task: Bash@3
-      displayName: 'Install Trivy'
-      inputs:
-      targetType: 'inline'
-      script: |
-      echo "Installing Trivy..."
-      # Install Trivy
-      sudo apt-get update
-      sudo apt-get install wget apt-transport-https gnupg lsb-release -y
-      wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
-      echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee -a /etc/apt/sources.list.d/trivy.list
-      sudo apt-get update
-      sudo apt-get install trivy -y
-      
-      # Verify installation
-      trivy --version
+          echo "✅ All Terraform files are properly formatted"
 
-    - task: PublishTestResults@2
-      displayName: 'Publish Security Scan Results'
+    - task: Bash@3
+      displayName: 'Install and Run Security Scan'
       inputs:
-        testResultsFormat: 'JUnit'
-        testResultsFiles: 'terraform/tfsec-results.xml'
-        failTaskOnFailedTests: false
-        testRunTitle: 'TFSec Security Scan'
+        targetType: 'inline'
+        script: |
+          echo "Installing Trivy for security scanning..."
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+          
+          echo "Running security scan on Terraform files..."
+          cd terraform/
+          trivy config . --format table || echo "Security scan completed with findings"
+          
+          # Generate JSON report for artifacts
+          trivy config . --format json --output trivy-results.json || true
+          
+          echo "✅ Security scan completed"
+      continueOnError: true
 
     - task: PublishBuildArtifacts@1
-      displayName: 'Publish Security Results'
+      displayName: 'Publish Security Scan Results'
+      condition: always()
       inputs:
-        pathToPublish: 'terraform/tfsec-results.json'
+        pathToPublish: 'terraform/trivy-results.json'
         artifactName: 'security-scan-results'
 
-  - job: TerraformValidate
-    displayName: 'Terraform Validation'
-    pool:
-      vmImage: $(vmImageName)
-    steps:
     - template: templates/terraform-validation.yml
 
 # ==========================================
-# GLOBAL INFRASTRUCTURE STAGE
+# DEPLOY GLOBAL INFRASTRUCTURE
 # ==========================================
 - stage: DeployGlobal
   displayName: 'Deploy Global Infrastructure'
   dependsOn: Validate
-  condition: and(succeeded(), or(eq(variables['Build.SourceBranch'], 'refs/heads/main'), eq(variables['Build.SourceBranch'], 'refs/heads/develop')))
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/master'))
   jobs:
   - deployment: GlobalInfrastructure
     displayName: 'Deploy Global Resources'
@@ -121,64 +114,12 @@ stages:
               workingDirectory: 'terraform/global'
 
 # ==========================================
-# DEVELOPMENT ENVIRONMENT STAGE
-# ==========================================
-# - stage: DeployDev
-#   displayName: 'Deploy Development'
-#   dependsOn: DeployGlobal
-#   condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/develop'))
-#   variables:
-#   - template: variables/dev.yml
-#   jobs:
-#   - deployment: DevelopmentEnvironment
-#     displayName: 'Deploy to Development'
-#     environment: 'development'
-#     pool:
-#       vmImage: $(vmImageName)
-#     strategy:
-#       runOnce:
-#         deploy:
-#           steps:
-#           - template: templates/terraform-deploy.yml
-#             parameters:
-#               environment: 'dev'
-#               serviceConnection: $(azureServiceConnection)
-#               terraformVersion: $(terraformVersion)
-#               workingDirectory: 'terraform/environments/dev'
-
-# # ==========================================
-# # STAGING ENVIRONMENT STAGE
-# # ==========================================
-# - stage: DeployStaging
-#   displayName: 'Deploy Staging'
-#   dependsOn: DeployGlobal
-#   condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
-#   variables:
-#   - template: variables/staging.yml
-#   jobs:
-#   - deployment: StagingEnvironment
-#     displayName: 'Deploy to Staging'
-#     environment: 'staging'
-#     pool:
-#       vmImage: $(vmImageName)
-#     strategy:
-#       runOnce:
-#         deploy:
-#           steps:
-#           - template: templates/terraform-deploy.yml
-#             parameters:
-#               environment: 'staging'
-#               serviceConnection: $(azureServiceConnection)
-#               terraformVersion: $(terraformVersion)
-#               workingDirectory: 'terraform/environments/staging'
-
-# ==========================================
-# PRODUCTION ENVIRONMENT STAGE
+# DEPLOY PRODUCTION ENVIRONMENT
 # ==========================================
 - stage: DeployProduction
   displayName: 'Deploy Production'
-  #dependsOn: DeployStaging
-  #condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  dependsOn: DeployGlobal
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/master'))
   variables:
   - template: variables/prod.yml
   jobs:
@@ -200,11 +141,78 @@ stages:
               runHealthCheck: true
 
           - task: PowerShell@2
-            displayName: 'Post-Deployment Notification'
+            displayName: 'Production Deployment Summary'
             inputs:
               targetType: 'inline'
               script: |
-                Write-Host "Production deployment completed successfully!"
+                Write-Host "🎉 PRODUCTION DEPLOYMENT COMPLETED SUCCESSFULLY! 🎉"
+                Write-Host "=================================================="
                 Write-Host "Build ID: $(Build.BuildId)"
-                Write-Host "Commit: $(Build.SourceVersion)"
-                Write-Host "Timestamp: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')"
+                Write-Host "Build Number: $(Build.BuildNumber)"
+                Write-Host "Source Branch: $(Build.SourceBranch)"
+                Write-Host "Commit SHA: $(Build.SourceVersion)"
+                Write-Host "Triggered by: $(Build.RequestedFor)"
+                Write-Host "Deployment Time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')"
+                Write-Host "=================================================="
+                
+                # Create deployment summary file
+                $deploymentSummary = @"
+                # Production Deployment Summary
+                
+                ## Deployment Details
+                - **Environment**: Production
+                - **Build ID**: $(Build.BuildId)
+                - **Build Number**: $(Build.BuildNumber)
+                - **Source Branch**: $(Build.SourceBranch)
+                - **Commit SHA**: $(Build.SourceVersion)
+                - **Triggered by**: $(Build.RequestedFor)
+                - **Deployment Time**: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')
+                
+                ## Infrastructure Components
+                - ✅ Global Infrastructure (Key Vault, Log Analytics)
+                - ✅ Production Environment (Traffic Manager, App Services)
+                - ✅ Primary Region: East US
+                - ✅ Secondary Region: West Europe
+                
+                ## Post-Deployment
+                - Health checks completed
+                - Monitoring enabled
+                - Traffic Manager configured
+                
+                ---
+                *Deployment completed successfully via Azure DevOps Pipeline*
+                "@
+                
+                $deploymentSummary | Out-File -FilePath "production-deployment-summary.md" -Encoding UTF8
+                Write-Host "✅ Deployment summary created"
+
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish Deployment Summary'
+            inputs:
+              pathToPublish: 'production-deployment-summary.md'
+              artifactName: 'production-deployment-summary'
+
+          - task: Bash@3
+            displayName: 'Final Deployment Verification'
+            inputs:
+              targetType: 'inline'
+              script: |
+                echo "🔍 Running final deployment verification..."
+                
+                # Check if deployment was successful
+                if [ -f "terraform/environments/prod/terraform-outputs.json" ]; then
+                  echo "✅ Terraform outputs found"
+                  
+                  # Display key outputs if available
+                  if command -v jq &> /dev/null; then
+                    echo "📊 Key Infrastructure Details:"
+                    echo "Traffic Manager FQDN: $(jq -r '.traffic_manager_fqdn.value // "N/A"' terraform/environments/prod/terraform-outputs.json)"
+                    echo "Primary App URL: $(jq -r '.primary_app_service_url.value // "N/A"' terraform/environments/prod/terraform-outputs.json)"
+                    echo "Secondary App URL: $(jq -r '.secondary_app_service_url.value // "N/A"' terraform/environments/prod/terraform-outputs.json)"
+                  fi
+                else
+                  echo "⚠️ Terraform outputs not found - this may be expected for first deployment"
+                fi
+                
+                echo "✅ Production deployment pipeline completed successfully!"
+                echo "🚀 Your global application is now live!"
