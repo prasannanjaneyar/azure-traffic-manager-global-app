@@ -1,0 +1,170 @@
+trigger:
+  branches:
+    include:
+    - main
+    - develop
+  paths:
+    include:
+    - terraform/*
+    - .azure-pipelines/*
+
+variables:
+  # Pipeline Variables
+  - name: terraformVersion
+    value: '1.6.6'
+  - name: azurermVersion
+    value: '3.85.0'
+  
+  # Service Connection
+  - name: serviceConnection
+    value: 'azure-service-connection'
+  
+  # Terraform Backend Configuration
+  - name: backendResourceGroup
+    value: 'tfstate-rg'
+  - name: backendStorageAccount
+    value: 'tfstateaccount'
+  - name: backendContainer
+    value: 'tfstate'
+
+stages:
+- stage: Validate
+  displayName: 'Terraform Validate'
+  jobs:
+  - job: TerraformValidate
+    displayName: 'Validate Terraform Configuration'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - template: templates/terraform-plan.yml
+      parameters:
+        serviceConnection: $(serviceConnection)
+        environment: 'validate'
+        terraformVersion: $(terraformVersion)
+        validateOnly: true
+
+- stage: PlanDev
+  displayName: 'Plan Development'
+  dependsOn: Validate
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/develop'))
+  jobs:
+  - job: TerraformPlan
+    displayName: 'Terraform Plan - Dev'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - template: templates/terraform-plan.yml
+      parameters:
+        serviceConnection: $(serviceConnection)
+        environment: 'dev'
+        terraformVersion: $(terraformVersion)
+        backendResourceGroup: $(backendResourceGroup)
+        backendStorageAccount: $(backendStorageAccount)
+        backendContainer: $(backendContainer)
+
+- stage: DeployDev
+  displayName: 'Deploy Development'
+  dependsOn: PlanDev
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/develop'))
+  jobs:
+  - deployment: TerraformApply
+    displayName: 'Terraform Apply - Dev'
+    environment: 'dev'
+    pool:
+      vmImage: 'ubuntu-latest'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - template: templates/terraform-apply.yml
+            parameters:
+              serviceConnection: $(serviceConnection)
+              environment: 'dev'
+              terraformVersion: $(terraformVersion)
+              backendResourceGroup: $(backendResourceGroup)
+              backendStorageAccount: $(backendStorageAccount)
+              backendContainer: $(backendContainer)
+
+- stage: PlanStaging
+  displayName: 'Plan Staging'
+  dependsOn: Validate
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  jobs:
+  - job: TerraformPlan
+    displayName: 'Terraform Plan - Staging'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - template: templates/terraform-plan.yml
+      parameters:
+        serviceConnection: $(serviceConnection)
+        environment: 'staging'
+        terraformVersion: $(terraformVersion)
+        backendResourceGroup: $(backendResourceGroup)
+        backendStorageAccount: $(backendStorageAccount)
+        backendContainer: $(backendContainer)
+
+- stage: DeployStaging
+  displayName: 'Deploy Staging'
+  dependsOn: PlanStaging
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  jobs:
+  - deployment: TerraformApply
+    displayName: 'Terraform Apply - Staging'
+    environment: 'staging'
+    pool:
+      vmImage: 'ubuntu-latest'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - template: templates/terraform-apply.yml
+            parameters:
+              serviceConnection: $(serviceConnection)
+              environment: 'staging'
+              terraformVersion: $(terraformVersion)
+              backendResourceGroup: $(backendResourceGroup)
+              backendStorageAccount: $(backendStorageAccount)
+              backendContainer: $(backendContainer)
+
+- stage: PlanProduction
+  displayName: 'Plan Production'
+  dependsOn: DeployStaging
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  jobs:
+  - job: TerraformPlan
+    displayName: 'Terraform Plan - Production'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - template: templates/terraform-plan.yml
+      parameters:
+        serviceConnection: $(serviceConnection)
+        environment: 'prod'
+        terraformVersion: $(terraformVersion)
+        backendResourceGroup: $(backendResourceGroup)
+        backendStorageAccount: $(backendStorageAccount)
+        backendContainer: $(backendContainer)
+
+- stage: DeployProduction
+  displayName: 'Deploy Production'
+  dependsOn: PlanProduction
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  jobs:
+  - deployment: TerraformApply
+    displayName: 'Terraform Apply - Production'
+    environment: 'production'
+    pool:
+      vmImage: 'ubuntu-latest'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - template: templates/terraform-apply.yml
+            parameters:
+              serviceConnection: $(serviceConnection)
+              environment: 'prod'
+              terraformVersion: $(terraformVersion)
+              backendResourceGroup: $(backendResourceGroup)
+              backendStorageAccount: $(backendStorageAccount)
+              backendContainer: $(backendContainer)

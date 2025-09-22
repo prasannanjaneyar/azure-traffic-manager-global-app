@@ -1,0 +1,158 @@
+parameters:
+- name: serviceConnection
+  type: string
+- name: environment
+  type: string
+- name: terraformVersion
+  type: string
+- name: backendResourceGroup
+  type: string
+  default: ''
+- name: backendStorageAccount
+  type: string
+  default: ''
+- name: backendContainer
+  type: string
+  default: ''
+- name: validateOnly
+  type: boolean
+  default: false
+
+steps:
+- checkout: self
+  displayName: 'Checkout Repository'
+
+- task: TerraformInstaller@1
+  displayName: 'Install Terraform'
+  inputs:
+    terraformVersion: ${{ parameters.terraformVersion }}
+
+- task: AzureCLI@2
+  displayName: 'Azure CLI Login and Setup'
+  inputs:
+    azureSubscription: ${{ parameters.serviceConnection }}
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    inlineScript: |
+      echo "Logged in to Azure"
+      az account show
+      
+      # Set environment variables for Terraform
+      export ARM_CLIENT_ID=$(az account show --query user.name -o tsv)
+      export ARM_TENANT_ID=$(az account show --query tenantId -o tsv)
+      export ARM_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+      
+      echo "##vso[task.setvariable variable=ARM_TENANT_ID]$ARM_TENANT_ID"
+      echo "##vso[task.setvariable variable=ARM_SUBSCRIPTION_ID]$ARM_SUBSCRIPTION_ID"
+
+- ${{ if ne(parameters.validateOnly, true) }}:
+  - task: AzureCLI@2
+    displayName: 'Terraform Init'
+    inputs:
+      azureSubscription: ${{ parameters.serviceConnection }}
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      workingDirectory: 'terraform/environments/${{ parameters.environment }}'
+      inlineScript: |
+        terraform init \
+          -backend-config="resource_group_name=${{ parameters.backendResourceGroup }}" \
+          -backend-config="storage_account_name=${{ parameters.backendStorageAccount }}" \
+          -backend-config="container_name=${{ parameters.backendContainer }}" \
+          -backend-config="key=${{ parameters.environment }}/terraform.tfstate"
+
+- ${{ if eq(parameters.validateOnly, true) }}:
+  - task: AzureCLI@2
+    displayName: 'Terraform Init (Validate Only)'
+    inputs:
+      azureSubscription: ${{ parameters.serviceConnection }}
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      workingDirectory: 'terraform/environments/prod'
+      inlineScript: |
+        terraform init -backend=false
+
+- task: AzureCLI@2
+  displayName: 'Terraform Format Check'
+  inputs:
+    azureSubscription: ${{ parameters.serviceConnection }}
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    workingDirectory: 'terraform'
+    inlineScript: |
+      terraform fmt -check -recursive
+      if [ $? -ne 0 ]; then
+        echo "##vso[task.logissue type=error]Terraform files are not properly formatted"
+        exit 1
+      fi
+
+- task: AzureCLI@2
+  displayName: 'Terraform Validate'
+  inputs:
+    azureSubscription: ${{ parameters.serviceConnection }}
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    workingDirectory: 'terraform/environments/${{ parameters.environment }}'
+    inlineScript: |
+      terraform validate
+
+- ${{ if ne(parameters.validateOnly, true) }}:
+  - task: AzureCLI@2
+    displayName: 'Terraform Plan'
+    inputs:
+      azureSubscription: ${{ parameters.serviceConnection }}
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      workingDirectory: 'terraform/environments/${{ parameters.environment }}'
+      inlineScript: |
+        terraform plan -out=tfplan -input=false
+        
+        # Save plan summary to file
+        terraform show -no-color tfplan > tfplan.txt
+        
+        # Check if plan has changes
+        if terraform show -json tfplan | jq -e '.resource_changes | length > 0' > /dev/null; then
+          echo "##vso[task.setvariable variable=HasChanges;isOutput=true]true"
+          echo "Terraform plan has changes"
+        else
+          echo "##vso[task.setvariable variable=HasChanges;isOutput=true]false"
+          echo "No changes in Terraform plan"
+        fi
+
+  - task: PublishBuildArtifacts@1
+    displayName: 'Publish Terraform Plan'
+    condition: and(succeeded(), ne('${{ parameters.validateOnly }}', true))
+    inputs:
+      pathToPublish: 'terraform/environments/${{ parameters.environment }}/tfplan'
+      artifactName: 'terraform-plan-${{ parameters.environment }}'
+
+  - task: PublishBuildArtifacts@1
+    displayName: 'Publish Terraform Plan Summary'
+    condition: and(succeeded(), ne('${{ parameters.validateOnly }}', true))
+    inputs:
+      pathToPublish: 'terraform/environments/${{ parameters.environment }}/tfplan.txt'
+      artifactName: 'terraform-plan-summary-${{ parameters.environment }}'
+
+- task: AzureCLI@2
+  displayName: 'Run Terraform Security Scan'
+  inputs:
+    azureSubscription: ${{ parameters.serviceConnection }}
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    workingDirectory: 'terraform'
+    inlineScript: |
+      # Install tfsec for security scanning
+      curl -s https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh | bash
+      
+      # Run security scan
+      ./tfsec . --format=junit --out=tfsec-results.xml || true
+      
+      # Display results
+      ./tfsec . || echo "Security scan completed with findings"
+
+- task: PublishTestResults@2
+  displayName: 'Publish Security Scan Results'
+  inputs:
+    testResultsFormat: 'JUnit'
+    testResultsFiles: 'terraform/tfsec-results.xml'
+    failTaskOnFailedTests: false
+    testRunTitle: 'Terraform Security Scan - ${{ parameters.environment }}'

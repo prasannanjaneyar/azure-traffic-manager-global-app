@@ -1,0 +1,127 @@
+parameters:
+- name: serviceConnection
+  type: string
+- name: environment
+  type: string
+- name: terraformVersion
+  type: string
+- name: backendResourceGroup
+  type: string
+- name: backendStorageAccount
+  type: string
+- name: backendContainer
+  type: string
+
+steps:
+- checkout: self
+  displayName: 'Checkout Repository'
+
+- task: DownloadBuildArtifacts@1
+  displayName: 'Download Terraform Plan'
+  inputs:
+    buildType: 'current'
+    artifactName: 'terraform-plan-${{ parameters.environment }}'
+    downloadPath: '$(System.ArtifactsDirectory)'
+
+- task: TerraformInstaller@1
+  displayName: 'Install Terraform'
+  inputs:
+    terraformVersion: ${{ parameters.terraformVersion }}
+
+- task: AzureCLI@2
+  displayName: 'Terraform Init'
+  inputs:
+    azureSubscription: ${{ parameters.serviceConnection }}
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    workingDirectory: 'terraform/environments/${{ parameters.environment }}'
+    inlineScript: |
+      terraform init \
+        -backend-config="resource_group_name=${{ parameters.backendResourceGroup }}" \
+        -backend-config="storage_account_name=${{ parameters.backendStorageAccount }}" \
+        -backend-config="container_name=${{ parameters.backendContainer }}" \
+        -backend-config="key=${{ parameters.environment }}/terraform.tfstate"
+
+- task: AzureCLI@2
+  displayName: 'Copy Terraform Plan'
+  inputs:
+    azureSubscription: ${{ parameters.serviceConnection }}
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    inlineScript: |
+      cp "$(System.ArtifactsDirectory)/terraform-plan-${{ parameters.environment }}/tfplan" \
+         "terraform/environments/${{ parameters.environment }}/tfplan"
+
+- task: AzureCLI@2
+  displayName: 'Terraform Apply'
+  inputs:
+    azureSubscription: ${{ parameters.serviceConnection }}
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    workingDirectory: 'terraform/environments/${{ parameters.environment }}'
+    inlineScript: |
+      echo "Applying Terraform plan for ${{ parameters.environment }} environment"
+      
+      # Apply the plan
+      terraform apply -input=false tfplan
+      
+      # Output important values
+      echo "=== Terraform Outputs ==="
+      terraform output -json > terraform-outputs.json
+      
+      # Display key outputs
+      echo "Traffic Manager FQDN: $(terraform output -raw traffic_manager_fqdn 2>/dev/null || echo 'N/A')"
+      echo "Primary App Service URL: $(terraform output -raw primary_app_service_url 2>/dev/null || echo 'N/A')"
+      echo "Secondary App Service URL: $(terraform output -raw secondary_app_service_url 2>/dev/null || echo 'N/A')"
+
+- task: AzureCLI@2
+  displayName: 'Post-Deployment Validation'
+  inputs:
+    azureSubscription: ${{ parameters.serviceConnection }}
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    workingDirectory: 'terraform/environments/${{ parameters.environment }}'
+    inlineScript: |
+      # Get outputs
+      TM_FQDN=$(terraform output -raw traffic_manager_fqdn 2>/dev/null || echo '')
+      
+      if [ ! -z "$TM_FQDN" ]; then
+        echo "Testing Traffic Manager endpoint: $TM_FQDN"
+        
+        # Wait for DNS propagation
+        sleep 30
+        
+        # Test HTTP response
+        HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://$TM_FQDN/health" || echo "000")
+        
+        if [ "$HTTP_STATUS" == "200" ]; then
+          echo "✅ Health check passed - HTTP $HTTP_STATUS"
+        else
+          echo "⚠️ Health check failed - HTTP $HTTP_STATUS"
+          echo "This might be expected during initial deployment"
+        fi
+        
+        # Test DNS resolution
+        nslookup $TM_FQDN || echo "DNS resolution check completed"
+      else
+        echo "Traffic Manager FQDN not found in outputs"
+      fi
+
+- task: PublishBuildArtifacts@1
+  displayName: 'Publish Terraform Outputs'
+  inputs:
+    pathToPublish: 'terraform/environments/${{ parameters.environment }}/terraform-outputs.json'
+    artifactName: 'terraform-outputs-${{ parameters.environment }}'
+
+- task: AzureCLI@2
+  displayName: 'Cleanup'
+  condition: always()
+  inputs:
+    azureSubscription: ${{ parameters.serviceConnection }}
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    workingDirectory: 'terraform/environments/${{ parameters.environment }}'
+    inlineScript: |
+      # Clean up plan file for security
+      rm -f tfplan
+      echo "Cleanup completed"
