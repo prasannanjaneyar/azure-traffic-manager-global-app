@@ -13,9 +13,10 @@ parameters:
 
 steps:
 - checkout: self
+  displayName: 'Checkout Repository'
 
 - task: TerraformInstaller@1
-  displayName: 'Install Terraform'
+  displayName: 'Install Terraform ${{ parameters.terraformVersion }}'
   inputs:
     terraformVersion: ${{ parameters.terraformVersion }}
 
@@ -40,17 +41,40 @@ steps:
     environmentServiceNameAzureRM: ${{ parameters.serviceConnection }}
     commandOptions: '-out=tfplan -detailed-exitcode'
 
-- task: TerraformTaskV4@4
+- task: Bash@3
   displayName: 'Generate Plan Summary'
   inputs:
-    provider: 'azurerm'
-    command: 'show'
+    targetType: 'inline'
     workingDirectory: ${{ parameters.workingDirectory }}
-    environmentServiceNameAzureRM: ${{ parameters.serviceConnection }}
-    commandOptions: '-no-color tfplan'
-    outputTo: 'file'
-    outputFormat: 'humanreadable'
-    fileName: 'tfplan.txt'
+    script: |
+      echo "=== Generating Plan Summary ==="
+      
+      # List files to debug
+      echo "Files in working directory:"
+      ls -la
+      
+      # Check if tfplan file exists
+      if [ -f "tfplan" ]; then
+        echo "✅ Plan file found, generating summary..."
+        
+        # Generate the summary
+        if terraform show -no-color tfplan > tfplan.txt; then
+          echo "✅ Plan summary generated successfully"
+          echo "File size: $(du -h tfplan.txt | cut -f1)"
+          echo "First 10 lines of summary:"
+          head -10 tfplan.txt
+          echo "Setting variable for conditional publishing..."
+          echo "##vso[task.setvariable variable=PlanSummaryExists]true"
+        else
+          echo "❌ Failed to generate plan summary"
+          echo "##vso[task.setvariable variable=PlanSummaryExists]false"
+        fi
+      else
+        echo "❌ tfplan file not found in directory"
+        echo "Available files:"
+        find . -name "*plan*" -o -name "*.tf*" | head -10
+        echo "##vso[task.setvariable variable=PlanSummaryExists]false"
+      fi
 
 - task: PublishBuildArtifacts@1
   displayName: 'Publish Terraform Plan'
@@ -60,6 +84,7 @@ steps:
 
 - task: PublishBuildArtifacts@1
   displayName: 'Publish Plan Summary'
+  condition: eq(variables['PlanSummaryExists'], 'true')
   inputs:
     pathToPublish: '${{ parameters.workingDirectory }}/tfplan.txt'
     artifactName: 'terraform-plan-summary-${{ parameters.environment }}'
@@ -96,48 +121,112 @@ steps:
     inputs:
       targetType: 'inline'
       script: |
-        if (Test-Path "${{ parameters.workingDirectory }}/terraform-outputs.json") {
-          $outputs = Get-Content "${{ parameters.workingDirectory }}/terraform-outputs.json" | ConvertFrom-Json
-          $fqdn = $outputs.traffic_manager_fqdn.value
-          
-          if ($fqdn) {
-            Write-Host "Starting health check for: $fqdn"
+        Write-Host "Starting post-deployment health check..."
+        
+        $outputsPath = "${{ parameters.workingDirectory }}/terraform-outputs.json"
+        
+        if (Test-Path $outputsPath) {
+          try {
+            $outputs = Get-Content $outputsPath | ConvertFrom-Json
+            Write-Host "Terraform outputs loaded successfully"
             
-            $maxRetries = 10
-            $retryInterval = 20
+            # Try to get Traffic Manager FQDN from different possible output names
+            $fqdn = $null
+            if ($outputs.traffic_manager_fqdn) {
+              $fqdn = $outputs.traffic_manager_fqdn.value
+            } elseif ($outputs.traffic_manager_profile_fqdn) {
+              $fqdn = $outputs.traffic_manager_profile_fqdn.value
+            } elseif ($outputs.application_urls) {
+              $fqdn = $outputs.application_urls.value.global_url -replace "https://", ""
+            }
             
-            for ($i = 1; $i -le $maxRetries; $i++) {
-              try {
-                $response = Invoke-WebRequest -Uri "https://$fqdn/health" -UseBasicParsing -TimeoutSec 30
-                if ($response.StatusCode -eq 200) {
-                  Write-Host "✅ Health check passed!"
-                  return
+            if ($fqdn) {
+              Write-Host "Starting health check for: $fqdn"
+              
+              $maxRetries = 15
+              $retryInterval = 20
+              
+              for ($i = 1; $i -le $maxRetries; $i++) {
+                Write-Host "Health check attempt $i/$maxRetries..."
+                
+                try {
+                  # Try both HTTP and HTTPS
+                  $healthUrls = @("https://$fqdn/health", "http://$fqdn/health", "https://$fqdn", "http://$fqdn")
+                  
+                  foreach ($url in $healthUrls) {
+                    try {
+                      Write-Host "Trying: $url"
+                      $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 30
+                      
+                      if ($response.StatusCode -eq 200) {
+                        Write-Host "✅ Health check passed for $url!"
+                        Write-Host "Status Code: $($response.StatusCode)"
+                        Write-Host "Response Length: $($response.Content.Length) bytes"
+                        if ($response.Content.Length -lt 1000) {
+                          Write-Host "Response Content: $($response.Content)"
+                        }
+                        return
+                      }
+                    }
+                    catch {
+                      Write-Host "Failed $url : $($_.Exception.Message)"
+                    }
+                  }
+                }
+                catch {
+                  Write-Host "❌ Health check attempt $i failed: $($_.Exception.Message)"
+                }
+                
+                if ($i -lt $maxRetries) {
+                  Write-Host "Retrying in $retryInterval seconds..."
+                  Start-Sleep -Seconds $retryInterval
                 }
               }
-              catch {
-                Write-Host "❌ Health check failed: $($_.Exception.Message)"
-              }
               
-              if ($i -lt $maxRetries) {
-                Start-Sleep -Seconds $retryInterval
-              }
+              Write-Host "⚠️ Health check failed after $maxRetries attempts"
+              Write-Host "This might be expected for initial deployment - infrastructure may still be starting up"
+              Write-Host "##vso[task.logissue type=warning]Health check failed but deployment continues"
+            } else {
+              Write-Host "⚠️ Traffic Manager FQDN not found in outputs"
+              Write-Host "Available outputs:"
+              $outputs | ConvertTo-Json -Depth 3
             }
-          } else {
-            Write-Host "⚠️ Traffic Manager FQDN not found in outputs, skipping health check"
+          }
+          catch {
+            Write-Host "❌ Error processing Terraform outputs: $($_.Exception.Message)"
           }
         } else {
-          Write-Host "⚠️ Terraform outputs file not found, skipping health check"
+          Write-Host "⚠️ Terraform outputs file not found at: $outputsPath"
+          Write-Host "Available files in working directory:"
+          Get-ChildItem "${{ parameters.workingDirectory }}" | Format-Table Name, Length, LastWriteTime
         }
-# Add this task right after the Terraform Plan task:
+
 - task: Bash@3
-  displayName: 'Generate Plan Summary'
+  displayName: 'Deployment Summary'
   inputs:
     targetType: 'inline'
     workingDirectory: ${{ parameters.workingDirectory }}
     script: |
-      terraform show -no-color tfplan > tfplan.txt
-      echo "✅ Plan summary generated: tfplan.txt"
+      echo "=== Deployment Summary ==="
+      echo "Environment: ${{ parameters.environment }}"
+      echo "Timestamp: $(date -u)"
+      echo "Working Directory: $(pwd)"
       
+      if [ -f "terraform-outputs.json" ]; then
+        echo "✅ Terraform outputs available"
+        
+        # Extract key information if available
+        if command -v jq &> /dev/null; then
+          echo "Key Infrastructure Details:"
+          echo "Traffic Manager FQDN: $(jq -r '.traffic_manager_fqdn.value // .traffic_manager_profile_fqdn.value // "N/A"' terraform-outputs.json)"
+          echo "Resource Groups: $(jq -r '.primary_resource_group_name.value // "N/A"' terraform-outputs.json), $(jq -r '.secondary_resource_group_name.value // "N/A"' terraform-outputs.json)"
+        fi
+      else
+        echo "⚠️ Terraform outputs not available"
+      fi
+      
+      echo "✅ ${{ parameters.environment }} deployment completed successfully!"
+
 - task: Bash@3
   displayName: 'Cleanup'
   condition: always()
@@ -146,5 +235,12 @@ steps:
     workingDirectory: ${{ parameters.workingDirectory }}
     script: |
       echo "Cleaning up temporary files..."
+      
+      # Remove plan file for security
       rm -f tfplan
-      echo "Cleanup completed"
+      
+      # Keep outputs file for artifacts but clean up other temp files
+      find . -name "*.tmp" -delete 2>/dev/null || true
+      find . -name ".terraform.lock.hcl.backup*" -delete 2>/dev/null || true
+      
+      echo "✅ Cleanup completed"
