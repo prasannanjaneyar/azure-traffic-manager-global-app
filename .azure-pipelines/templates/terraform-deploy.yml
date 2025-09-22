@@ -56,13 +56,14 @@ steps:
         echo "tfplan not found"
         echo "##vso[task.setvariable variable=PlanSummaryExists]false"
       fi
-
+# Publish Terraform Plan
 - task: PublishBuildArtifacts@1
   displayName: 'Publish Terraform Plan'
   inputs:
     pathToPublish: '${{ parameters.workingDirectory }}/tfplan'
     artifactName: 'terraform-plan-${{ parameters.environment }}'
 
+# Publish Plan Summary
 - task: PublishBuildArtifacts@1
   displayName: 'Publish Plan Summary'
   condition: eq(variables['PlanSummaryExists'], 'true')
@@ -70,78 +71,104 @@ steps:
     pathToPublish: '${{ parameters.workingDirectory }}/tfplan.txt'
     artifactName: 'terraform-plan-summary-${{ parameters.environment }}'
 
-- task: TerraformTaskV4@4
-  displayName: 'Terraform Apply'
-  inputs:
-    provider: 'azurerm'
-    command: 'apply'
-    workingDirectory: ${{ parameters.workingDirectory }}
-    environmentServiceNameAzureRM: ${{ parameters.serviceConnection }}
-    commandOptions: '-auto-approve tfplan'
+# Export Terraform Outputs to JSON file
+- script: |
+    terraform output -json > terraform/global/terraform-outputs.json
+  workingDirectory: ${{ parameters.workingDirectory }}
+  displayName: "Export Terraform Outputs"
 
-# ✅ Export outputs to JSON
-- task: TerraformTaskV4@4
-  displayName: 'Terraform Output'
-  inputs:
-    provider: 'azurerm'
-    command: 'output'
-    workingDirectory: ${{ parameters.workingDirectory }}
-    environmentServiceNameAzureRM: ${{ parameters.serviceConnection }}
-    commandOptions: '-json'
-    outputTo: 'file'
-    fileName: 'terraform-outputs.json'
-
-# ✅ Publish outputs artifact
+# Publish Terraform Outputs
 - task: PublishBuildArtifacts@1
   displayName: 'Publish Terraform Outputs'
   inputs:
-    pathToPublish: '${{ parameters.workingDirectory }}/terraform-outputs.json'
+    pathToPublish: 'terraform/global/terraform-outputs.json'
     artifactName: 'terraform-outputs-${{ parameters.environment }}'
 
-# Optional post-deployment health check
-- ${{ if eq(parameters.runHealthCheck, true) }}:
-  - task: PowerShell@2
-    displayName: 'Health Check'
-    inputs:
-      targetType: 'inline'
-      script: |
-        Write-Host "Starting health check..."
-        $outputsPath = "${{ parameters.workingDirectory }}/terraform-outputs.json"
-        if (Test-Path $outputsPath) {
-          $outputs = Get-Content $outputsPath | ConvertFrom-Json
-          Write-Host "Terraform outputs loaded successfully"
-          $fqdn = $outputs.traffic_manager_fqdn.value `
-            ?? $outputs.traffic_manager_profile_fqdn.value `
-            ?? ($outputs.application_urls.value.global_url -replace "https://", "")
-          if ($fqdn) { Write-Host "Checking $fqdn ..." }
-        } else {
-          Write-Host "⚠️ Terraform outputs not found"
-        }
+# - task: PublishBuildArtifacts@1
+#   displayName: 'Publish Terraform Plan'
+#   inputs:
+#     pathToPublish: '${{ parameters.workingDirectory }}/tfplan'
+#     artifactName: 'terraform-plan-${{ parameters.environment }}'
 
-- task: Bash@3
-  displayName: 'Deployment Summary'
-  inputs:
-    targetType: 'inline'
-    workingDirectory: ${{ parameters.workingDirectory }}
-    script: |
-      echo "=== Deployment Summary ==="
-      echo "Environment: ${{ parameters.environment }}"
-      date -u
-      if [ -f "terraform-outputs.json" ]; then
-        echo "✅ Outputs available"
-        jq '.' terraform-outputs.json || cat terraform-outputs.json
-      else
-        echo "⚠️ No outputs file found"
-      fi
+# - task: PublishBuildArtifacts@1
+#   displayName: 'Publish Plan Summary'
+#   condition: eq(variables['PlanSummaryExists'], 'true')
+#   inputs:
+#     pathToPublish: '${{ parameters.workingDirectory }}/tfplan.txt'
+#     artifactName: 'terraform-plan-summary-${{ parameters.environment }}'
 
-- task: Bash@3
-  displayName: 'Cleanup'
-  condition: always()
-  inputs:
-    targetType: 'inline'
-    workingDirectory: ${{ parameters.workingDirectory }}
-    script: |
-      echo "Cleaning up temporary files..."
-      rm -f tfplan
-      find . -name "*.tmp" -delete || true
-      echo "✅ Cleanup completed"
+# - task: TerraformTaskV4@4
+#   displayName: 'Terraform Apply'
+#   inputs:
+#     provider: 'azurerm'
+#     command: 'apply'
+#     workingDirectory: ${{ parameters.workingDirectory }}
+#     environmentServiceNameAzureRM: ${{ parameters.serviceConnection }}
+#     commandOptions: '-auto-approve tfplan'
+
+# # ✅ Export outputs to JSON
+# - task: TerraformTaskV4@4
+#   displayName: 'Terraform Output'
+#   inputs:
+#     provider: 'azurerm'
+#     command: 'output'
+#     workingDirectory: ${{ parameters.workingDirectory }}
+#     environmentServiceNameAzureRM: ${{ parameters.serviceConnection }}
+#     commandOptions: '-json'
+#     outputTo: 'file'
+#     fileName: 'terraform-outputs.json'
+
+# # ✅ Publish outputs artifact
+# - task: PublishBuildArtifacts@1
+#   displayName: 'Publish Terraform Outputs'
+#   inputs:
+#     pathToPublish: '${{ parameters.workingDirectory }}/terraform-outputs.json'
+#     artifactName: 'terraform-outputs-${{ parameters.environment }}'
+
+# # Optional post-deployment health check
+# - ${{ if eq(parameters.runHealthCheck, true) }}:
+#   - task: PowerShell@2
+#     displayName: 'Health Check'
+#     inputs:
+#       targetType: 'inline'
+#       script: |
+#         Write-Host "Starting health check..."
+#         $outputsPath = "${{ parameters.workingDirectory }}/terraform-outputs.json"
+#         if (Test-Path $outputsPath) {
+#           $outputs = Get-Content $outputsPath | ConvertFrom-Json
+#           Write-Host "Terraform outputs loaded successfully"
+#           $fqdn = $outputs.traffic_manager_fqdn.value `
+#             ?? $outputs.traffic_manager_profile_fqdn.value `
+#             ?? ($outputs.application_urls.value.global_url -replace "https://", "")
+#           if ($fqdn) { Write-Host "Checking $fqdn ..." }
+#         } else {
+#           Write-Host "⚠️ Terraform outputs not found"
+#         }
+
+# - task: Bash@3
+#   displayName: 'Deployment Summary'
+#   inputs:
+#     targetType: 'inline'
+#     workingDirectory: ${{ parameters.workingDirectory }}
+#     script: |
+#       echo "=== Deployment Summary ==="
+#       echo "Environment: ${{ parameters.environment }}"
+#       date -u
+#       if [ -f "terraform-outputs.json" ]; then
+#         echo "✅ Outputs available"
+#         jq '.' terraform-outputs.json || cat terraform-outputs.json
+#       else
+#         echo "⚠️ No outputs file found"
+#       fi
+
+# - task: Bash@3
+#   displayName: 'Cleanup'
+#   condition: always()
+#   inputs:
+#     targetType: 'inline'
+#     workingDirectory: ${{ parameters.workingDirectory }}
+#     script: |
+#       echo "Cleaning up temporary files..."
+#       rm -f tfplan
+#       find . -name "*.tmp" -delete || true
+#       echo "✅ Cleanup completed"
