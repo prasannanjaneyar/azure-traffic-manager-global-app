@@ -57,15 +57,7 @@ stages:
             echo "Please run 'terraform fmt -recursive terraform/' to fix formatting"
             exit 1
           fi
-
-    - task: Bash@3
-      displayName: 'Install TFSec'
-      inputs:
-        targetType: 'inline'
-        script: |
-          curl -s https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh | bash
-          sudo mv tfsec /usr/local/bin/
-
+          
     - task: Bash@3
       displayName: 'Install Trivy'
       inputs:
