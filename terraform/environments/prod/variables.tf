@@ -84,9 +84,9 @@ variable "secondary_geo_mappings" {
 variable "app_settings" {
   description = "Application settings"
   type        = map(string)
-  default     = {
-    "NODE_ENV"     = "production"
-    "PORT"         = "80"
+  default = {
+    "NODE_ENV"                     = "production"
+    "PORT"                         = "80"
     "WEBSITE_NODE_DEFAULT_VERSION" = "18.17.1"
   }
 }

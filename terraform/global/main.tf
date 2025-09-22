@@ -7,7 +7,7 @@ terraform {
       version = "~>3.0"
     }
   }
-  
+
   backend "azurerm" {
     resource_group_name  = "tfstate-rg"
     storage_account_name = "tfstateaccount09876"
@@ -43,12 +43,12 @@ resource "azurerm_resource_group" "shared" {
 
 # Shared Key Vault for secrets
 resource "azurerm_key_vault" "shared" {
-  name                        = "${var.prefix}-shared-kv"
-  location                    = azurerm_resource_group.shared.location
-  resource_group_name         = azurerm_resource_group.shared.name
-  tenant_id                   = data.azurerm_client_config.current.tenant_id
-  soft_delete_retention_days  = 7
-  purge_protection_enabled    = var.key_vault_purge_protection
+  name                       = "${var.prefix}-shared-kv"
+  location                   = azurerm_resource_group.shared.location
+  resource_group_name        = azurerm_resource_group.shared.name
+  tenant_id                  = data.azurerm_client_config.current.tenant_id
+  soft_delete_retention_days = 7
+  purge_protection_enabled   = var.key_vault_purge_protection
   sku_name                   = var.key_vault_sku
 
   # Default access policy for the current user/service principal

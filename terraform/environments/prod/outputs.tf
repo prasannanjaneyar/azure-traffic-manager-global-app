@@ -98,7 +98,7 @@ output "application_urls" {
 output "deployment_summary" {
   description = "Summary of deployed resources"
   value = {
-    environment           = "production"
+    environment          = "production"
     traffic_manager_fqdn = module.traffic_manager.traffic_manager_profile_fqdn
     primary_region       = var.primary_location
     secondary_region     = var.secondary_location

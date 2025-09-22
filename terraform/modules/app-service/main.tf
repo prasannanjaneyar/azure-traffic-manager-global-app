@@ -27,12 +27,12 @@ resource "azurerm_linux_web_app" "main" {
   service_plan_id     = azurerm_service_plan.main.id
 
   site_config {
-    always_on                               = var.always_on
+    always_on = var.always_on
     application_stack {
       node_version = var.node_version
     }
-    health_check_path                       = var.health_check_path
-    health_check_grace_period_seconds       = 300
+    health_check_path                 = var.health_check_path
+    health_check_grace_period_seconds = 300
   }
 
   app_settings = var.app_settings
@@ -57,8 +57,8 @@ resource "azurerm_windows_web_app" "main" {
     always_on         = var.always_on
     health_check_path = var.health_check_path
     application_stack {
-      current_stack  = "node"
-      node_version   = var.node_version
+      current_stack = "node"
+      node_version  = var.node_version
     }
   }
 
@@ -108,7 +108,7 @@ resource "azurerm_app_service_managed_certificate" "main" {
 }
 
 resource "azurerm_app_service_certificate_binding" "main" {
-  count           = var.custom_domain != null ? 1 : 0
+  count               = var.custom_domain != null ? 1 : 0
   hostname_binding_id = azurerm_app_service_custom_hostname_binding.main[0].id
   certificate_id      = azurerm_app_service_managed_certificate.main[0].id
   ssl_state           = "SniEnabled"
