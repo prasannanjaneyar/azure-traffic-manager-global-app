@@ -113,5 +113,5 @@ output "monitoring_dashboard_url" {
   value       = "https://portal.azure.com/#@${data.azurerm_client_config.current.tenant_id}/dashboard/private/subscriptions/${data.azurerm_client_config.current.subscription_id}/resourceGroups/${module.networking_primary.resource_group_name}/providers/Microsoft.Portal/dashboards"
 }
 
-# Data source for current configuration
-data "azurerm_client_config" "current" {}
+# # Data source for current configuration
+# data "azurerm_client_config" "current" {}

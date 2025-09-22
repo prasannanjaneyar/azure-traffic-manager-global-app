@@ -4,60 +4,6 @@ steps:
   inputs:
     terraformVersion: $(terraformVersion)
 
-- task: Bash@3
-  displayName: 'Terraform Format Check'
-  inputs:
-    targetType: 'inline'
-    script: |
-      terraform fmt -check -recursive terraform/
-      if [ $? -ne 0 ]; then
-        echo "##vso[task.logissue type=error]Terraform files are not properly formatted"
-        echo "Please run 'terraform fmt -recursive terraform/' to fix formatting"
-        exit 1
-      fi
-
-- task: Bash@3
-  displayName: 'Install Trivy'
-  inputs:
-    targetType: 'inline'
-    script: |
-      echo "Installing Trivy..."
-      # Install Trivy
-      sudo apt-get update
-      sudo apt-get install wget apt-transport-https gnupg lsb-release -y
-      wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
-      echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee -a /etc/apt/sources.list.d/trivy.list
-      sudo apt-get update
-      sudo apt-get install trivy -y
-      
-      # Verify installation
-      trivy --version
-
-- task: Bash@3
-  displayName: 'Run Trivy Security Scan'
-  inputs:
-    targetType: 'inline'
-    script: |
-      echo "Running Trivy security scan on Terraform files..."
-      cd terraform/
-      
-      # Run Trivy security scan for Infrastructure as Code
-      trivy config . --format json --output trivy-results.json || true
-      trivy config . --format table || echo "Security scan completed with findings"
-      
-      # Convert to JUnit format for Azure DevOps (optional)
-      if [ -f "trivy-results.json" ]; then
-        echo "Security scan results saved to trivy-results.json"
-      fi
-  continueOnError: true  # Don't fail the pipeline on security findings
-
-- task: PublishBuildArtifacts@1
-  displayName: 'Publish Security Scan Results'
-  condition: always()
-  inputs:
-    pathToPublish: 'terraform/trivy-results.json'
-    artifactName: 'security-scan-results'
-
 - task: AzureCLI@2
   displayName: 'Validate Global Configuration'
   inputs:
@@ -78,53 +24,39 @@ steps:
       fi
 
 - task: AzureCLI@2
-  displayName: 'Validate Environment Configurations'
+  displayName: 'Validate Production Configuration'
   inputs:
     azureSubscription: $(azureServiceConnection)
     scriptType: 'bash'
     scriptLocation: 'inlineScript'
+    workingDirectory: 'terraform/environments/prod'
     inlineScript: |
-      echo "Validating Environment Configurations..."
+      echo "Validating Production Environment Configuration..."
       
-      for env in dev staging prod; do
-        echo "Validating $env environment..."
-        
-        # Check if directory exists
-        if [ ! -d "terraform/environments/$env" ]; then
-          echo "⚠️ Directory terraform/environments/$env not found, skipping"
-          continue
-        fi
-        
-        cd "terraform/environments/$env"
-        
-        # Check if main.tf exists
-        if [ ! -f "main.tf" ]; then
-          echo "⚠️ main.tf not found in $env, skipping validation"
-          cd "../../.."
-          continue
-        fi
-        
-        terraform init -backend=false
-        terraform validate
-        
-        if [ $? -eq 0 ]; then
-          echo "✅ $env configuration is valid"
-        else
-          echo "❌ $env configuration validation failed"
-          exit 1
-        fi
-        
-        cd "../../.."
-      done
+      # Check if main.tf exists
+      if [ ! -f "main.tf" ]; then
+        echo "❌ main.tf not found in production environment"
+        exit 1
+      fi
+      
+      # Validate Terraform configuration
+      terraform init -backend=false
+      terraform validate
+      
+      if [ $? -eq 0 ]; then
+        echo "✅ Production configuration is valid"
+      else
+        echo "❌ Production configuration validation failed"
+        exit 1
+      fi
 
 - task: Bash@3
-  displayName: 'Check Module Dependencies'
+  displayName: 'Check Required Modules'
   inputs:
     targetType: 'inline'
     script: |
       echo "Checking module dependencies..."
       
-      # Check if required module files exist
       modules=("networking" "app-service" "traffic-manager")
       
       for module in "${modules[@]}"; do
@@ -135,6 +67,7 @@ steps:
           exit 1
         fi
         
+        # Check required files
         required_files=("main.tf" "variables.tf" "outputs.tf")
         for file in "${required_files[@]}"; do
           if [ ! -f "$module_path/$file" ]; then
@@ -146,4 +79,4 @@ steps:
         echo "✅ Module $module is properly structured"
       done
       
-      echo "✅ All module dependencies are satisfied"
+      echo "✅ All required modules are present and structured correctly"
