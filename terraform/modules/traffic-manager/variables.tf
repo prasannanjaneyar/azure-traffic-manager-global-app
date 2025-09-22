@@ -72,12 +72,12 @@ variable "monitor_tolerated_failures" {
 variable "endpoints" {
   description = "List of Azure endpoints"
   type = list(object({
-    name               = string
-    target_resource_id = string
-    weight             = number
-    priority           = number
-    custom_header_host = string
-    geo_mappings       = list(string)
+    name                  = string
+    target_resource_id    = string
+    weight               = number
+    priority             = number
+    custom_header_host   = optional(string)
+    geo_mappings         = optional(list(string), [])
   }))
   default = []
 }
@@ -89,7 +89,7 @@ variable "external_endpoints" {
     target       = string
     weight       = number
     priority     = number
-    geo_mappings = list(string)
+    geo_mappings = optional(list(string), [])
   }))
   default = []
 }
@@ -97,12 +97,12 @@ variable "external_endpoints" {
 variable "nested_endpoints" {
   description = "List of nested Traffic Manager endpoints"
   type = list(object({
-    name                    = string
-    target_resource_id      = string
+    name                     = string
+    target_resource_id       = string
     weight                  = number
     priority                = number
     minimum_child_endpoints = number
-    geo_mappings            = list(string)
+    geo_mappings            = optional(list(string), [])
   }))
   default = []
 }
