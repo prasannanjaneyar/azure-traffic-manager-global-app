@@ -1,0 +1,81 @@
+steps:
+- task: TerraformInstaller@1
+  displayName: 'Install Terraform'
+  inputs:
+    terraformVersion: $(terraformVersion)
+
+- task: AzureCLI@2
+  displayName: 'Validate Global Configuration'
+  inputs:
+    azureSubscription: $(azureServiceConnection)
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    workingDirectory: 'terraform/global'
+    inlineScript: |
+      echo "Validating Global Terraform Configuration..."
+      terraform init -backend=false
+      terraform validate
+      
+      if [ $? -eq 0 ]; then
+        echo "✅ Global configuration is valid"
+      else
+        echo "❌ Global configuration validation failed"
+        exit 1
+      fi
+
+- task: AzureCLI@2
+  displayName: 'Validate Environment Configurations'
+  inputs:
+    azureSubscription: $(azureServiceConnection)
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    inlineScript: |
+      echo "Validating Environment Configurations..."
+      
+      for env in dev staging prod; do
+        echo "Validating $env environment..."
+        cd "terraform/environments/$env"
+        
+        terraform init -backend=false
+        terraform validate
+        
+        if [ $? -eq 0 ]; then
+          echo "✅ $env configuration is valid"
+        else
+          echo "❌ $env configuration validation failed"
+          exit 1
+        fi
+        
+        cd "../../.."
+      done
+
+- task: Bash@3
+  displayName: 'Check Module Dependencies'
+  inputs:
+    targetType: 'inline'
+    script: |
+      echo "Checking module dependencies..."
+      
+      # Check if required module files exist
+      modules=("networking" "app-service" "traffic-manager")
+      
+      for module in "${modules[@]}"; do
+        module_path="terraform/modules/$module"
+        
+        if [ ! -d "$module_path" ]; then
+          echo "❌ Module directory $module_path does not exist"
+          exit 1
+        fi
+        
+        required_files=("main.tf" "variables.tf" "outputs.tf")
+        for file in "${required_files[@]}"; do
+          if [ ! -f "$module_path/$file" ]; then
+            echo "❌ Required file $module_path/$file does not exist"
+            exit 1
+          fi
+        done
+        
+        echo "✅ Module $module is properly structured"
+      done
+      
+      echo "✅ All module dependencies are satisfied"

@@ -1,0 +1,111 @@
+trigger: none
+
+parameters:
+- name: environment
+  displayName: 'Environment to Destroy'
+  type: string
+  default: 'dev'
+  values:
+  - dev
+  - staging
+  - prod
+  - global
+
+- name: confirmDestroy
+  displayName: 'Type "destroy" to confirm'
+  type: string
+  default: ''
+
+variables:
+  terraformVersion: '1.6.6'
+  vmImageName: 'ubuntu-latest'
+  azureServiceConnection: 'azure-terraform-service-connection'
+
+stages:
+- stage: ConfirmDestroy
+  displayName: 'Confirm Destruction'
+  condition: eq('${{ parameters.confirmDestroy }}', 'destroy')
+  jobs:
+  - job: DestroyInfrastructure
+    displayName: 'Destroy ${{ parameters.environment }} Infrastructure'
+    pool:
+      vmImage: $(vmImageName)
+    steps:
+    - checkout: self
+
+    - task: TerraformInstaller@1
+      displayName: 'Install Terraform'
+      inputs:
+        terraformVersion: $(terraformVersion)
+
+    - task: AzureCLI@2
+      displayName: 'Determine Working Directory'
+      inputs:
+        azureSubscription: $(azureServiceConnection)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          if [ "${{ parameters.environment }}" == "global" ]; then
+            echo "##vso[task.setvariable variable=WorkingDirectory]terraform/global"
+          else
+            echo "##vso[task.setvariable variable=WorkingDirectory]terraform/environments/${{ parameters.environment }}"
+          fi
+
+    - task: AzureCLI@2
+      displayName: 'Terraform Init'
+      inputs:
+        azureSubscription: $(azureServiceConnection)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        workingDirectory: $(WorkingDirectory)
+        inlineScript: |
+          terraform init \
+            -backend-config="resource_group_name=$(TF_STATE_RESOURCE_GROUP)" \
+            -backend-config="storage_account_name=$(TF_STATE_STORAGE_ACCOUNT)" \
+            -backend-config="container_name=$(TF_STATE_CONTAINER)" \
+            -backend-config="key=${{ parameters.environment }}/terraform.tfstate"
+
+    - task: AzureCLI@2
+      displayName: 'Terraform Destroy'
+      inputs:
+        azureSubscription: $(azureServiceConnection)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        workingDirectory: $(WorkingDirectory)
+        inlineScript: |
+          echo "⚠️ DESTROYING ${{ parameters.environment }} INFRASTRUCTURE ⚠️"
+          terraform destroy -auto-approve
+
+    - task: Bash@3
+      displayName: 'Log Destruction'
+      inputs:
+        targetType: 'inline'
+        script: |
+          echo "Infrastructure destroyed: ${{ parameters.environment }}" >> destruction-log.txt
+          echo "Timestamp: $(date -u)" >> destruction-log.txt
+          echo "Build ID: $(Build.BuildId)" >> destruction-log.txt
+          echo "Triggered by: $(Build.RequestedFor)" >> destruction-log.txt
+
+    - task: PublishBuildArtifacts@1
+      displayName: 'Upload Destruction Log'
+      inputs:
+        pathToPublish: 'destruction-log.txt'
+        artifactName: 'destruction-log-${{ parameters.environment }}'
+
+- stage: FailOnWrongConfirmation
+  displayName: 'Invalid Confirmation'
+  condition: ne('${{ parameters.confirmDestroy }}', 'destroy')
+  jobs:
+  - job: FailJob
+    displayName: 'Fail - Wrong Confirmation'
+    pool:
+      vmImage: $(vmImageName)
+    steps:
+    - task: Bash@3
+      displayName: 'Confirmation Required'
+      inputs:
+        targetType: 'inline'
+        script: |
+          echo "❌ Destruction cancelled - incorrect confirmation"
+          echo "Please type 'destroy' exactly to confirm infrastructure destruction"
+          exit 1

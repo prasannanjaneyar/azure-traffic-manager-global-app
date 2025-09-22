@@ -1,0 +1,209 @@
+parameters:
+- name: environment
+  type: string
+- name: serviceConnection
+  type: string
+- name: terraformVersion
+  type: string
+- name: workingDirectory
+  type: string
+- name: runHealthCheck
+  type: boolean
+  default: false
+
+steps:
+- checkout: self
+  displayName: 'Checkout Repository'
+
+- task: TerraformInstaller@1
+  displayName: 'Install Terraform ${{ parameters.terraformVersion }}'
+  inputs:
+    terraformVersion: ${{ parameters.terraformVersion }}
+
+- task: AzureCLI@2
+  displayName: 'Azure CLI Login and Setup'
+  inputs:
+    azureSubscription: ${{ parameters.serviceConnection }}
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    inlineScript: |
+      echo "Setting up Azure CLI context..."
+      az account show
+      
+      # Set Terraform environment variables
+      export ARM_CLIENT_ID=$(az account show --query user.name -o tsv 2>/dev/null || echo "")
+      export ARM_TENANT_ID=$(az account show --query tenantId -o tsv)
+      export ARM_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+      
+      echo "##vso[task.setvariable variable=ARM_TENANT_ID]$ARM_TENANT_ID"
+      echo "##vso[task.setvariable variable=ARM_SUBSCRIPTION_ID]$ARM_SUBSCRIPTION_ID"
+      
+      echo "Azure context configured successfully"
+
+- task: AzureCLI@2
+  displayName: 'Terraform Init'
+  inputs:
+    azureSubscription: ${{ parameters.serviceConnection }}
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    workingDirectory: ${{ parameters.workingDirectory }}
+    inlineScript: |
+      echo "Initializing Terraform for ${{ parameters.environment }}..."
+      
+      terraform init \
+        -backend-config="resource_group_name=$(TF_STATE_RESOURCE_GROUP)" \
+        -backend-config="storage_account_name=$(TF_STATE_STORAGE_ACCOUNT)" \
+        -backend-config="container_name=$(TF_STATE_CONTAINER)" \
+        -backend-config="key=${{ parameters.environment }}/terraform.tfstate"
+      
+      if [ $? -eq 0 ]; then
+        echo "✅ Terraform initialization successful"
+      else
+        echo "❌ Terraform initialization failed"
+        exit 1
+      fi
+
+- task: AzureCLI@2
+  displayName: 'Terraform Plan'
+  inputs:
+    azureSubscription: ${{ parameters.serviceConnection }}
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    workingDirectory: ${{ parameters.workingDirectory }}
+    inlineScript: |
+      echo "Creating Terraform plan for ${{ parameters.environment }}..."
+      
+      terraform plan -out=tfplan -input=false -detailed-exitcode
+      PLAN_EXIT_CODE=$?
+      
+      # Save plan in human readable format
+      terraform show -no-color tfplan > tfplan.txt
+      
+      # Check plan results
+      if [ $PLAN_EXIT_CODE -eq 0 ]; then
+        echo "✅ No changes needed"
+        echo "##vso[task.setvariable variable=HasChanges;isOutput=true]false"
+      elif [ $PLAN_EXIT_CODE -eq 2 ]; then
+        echo "✅ Plan created successfully with changes"
+        echo "##vso[task.setvariable variable=HasChanges;isOutput=true]true"
+      else
+        echo "❌ Terraform plan failed"
+        exit 1
+      fi
+
+- task: PublishBuildArtifacts@1
+  displayName: 'Publish Terraform Plan'
+  inputs:
+    pathToPublish: '${{ parameters.workingDirectory }}/tfplan'
+    artifactName: 'terraform-plan-${{ parameters.environment }}'
+
+- task: PublishBuildArtifacts@1
+  displayName: 'Publish Plan Summary'
+  inputs:
+    pathToPublish: '${{ parameters.workingDirectory }}/tfplan.txt'
+    artifactName: 'terraform-plan-summary-${{ parameters.environment }}'
+
+- task: AzureCLI@2
+  displayName: 'Terraform Apply'
+  inputs:
+    azureSubscription: ${{ parameters.serviceConnection }}
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    workingDirectory: ${{ parameters.workingDirectory }}
+    inlineScript: |
+      echo "Applying Terraform plan for ${{ parameters.environment }}..."
+      
+      # Apply the plan
+      terraform apply -input=false -auto-approve tfplan
+      
+      if [ $? -eq 0 ]; then
+        echo "✅ Terraform apply successful"
+        
+        # Get outputs
+        echo "=== Terraform Outputs ==="
+        terraform output -json > terraform-outputs.json
+        
+        # Display key outputs if they exist
+        if terraform output traffic_manager_fqdn > /dev/null 2>&1; then
+          TM_FQDN=$(terraform output -raw traffic_manager_fqdn)
+          echo "Traffic Manager FQDN: $TM_FQDN"
+          echo "##vso[task.setvariable variable=TrafficManagerFQDN;isOutput=true]$TM_FQDN"
+        fi
+        
+        if terraform output primary_app_service_url > /dev/null 2>&1; then
+          PRIMARY_URL=$(terraform output -raw primary_app_service_url)
+          echo "Primary App Service URL: $PRIMARY_URL"
+          echo "##vso[task.setvariable variable=PrimaryAppURL;isOutput=true]$PRIMARY_URL"
+        fi
+        
+        if terraform output secondary_app_service_url > /dev/null 2>&1; then
+          SECONDARY_URL=$(terraform output -raw secondary_app_service_url)
+          echo "Secondary App Service URL: $SECONDARY_URL"
+          echo "##vso[task.setvariable variable=SecondaryAppURL;isOutput=true]$SECONDARY_URL"
+        fi
+        
+      else
+        echo "❌ Terraform apply failed"
+        exit 1
+      fi
+
+- task: PublishBuildArtifacts@1
+  displayName: 'Publish Terraform Outputs'
+  inputs:
+    pathToPublish: '${{ parameters.workingDirectory }}/terraform-outputs.json'
+    artifactName: 'terraform-outputs-${{ parameters.environment }}'
+
+- ${{ if eq(parameters.runHealthCheck, true) }}:
+  - task: PowerShell@2
+    displayName: 'Health Check'
+    inputs:
+      targetType: 'inline'
+      script: |
+        $fqdn = $env:TRAFFICMANAGERFQDN
+        
+        if ([string]::IsNullOrEmpty($fqdn)) {
+          Write-Host "⚠️ Traffic Manager FQDN not available, skipping health check"
+          return
+        }
+        
+        Write-Host "Starting health check for: $fqdn"
+        
+        $maxRetries = 15
+        $retryInterval = 20
+        
+        for ($i = 1; $i -le $maxRetries; $i++) {
+          Write-Host "Health check attempt $i/$maxRetries..."
+          
+          try {
+            $response = Invoke-WebRequest -Uri "https://$fqdn/health" -UseBasicParsing -TimeoutSec 30
+            
+            if ($response.StatusCode -eq 200) {
+              Write-Host "✅ Health check passed!"
+              Write-Host "Response: $($response.Content)"
+              return
+            }
+          }
+          catch {
+            Write-Host "❌ Health check failed: $($_.Exception.Message)"
+          }
+          
+          if ($i -lt $maxRetries) {
+            Write-Host "Retrying in $retryInterval seconds..."
+            Start-Sleep -Seconds $retryInterval
+          }
+        }
+        
+        Write-Host "❌ Health check failed after $maxRetries attempts"
+        # Don't fail the deployment for health check failures
+        Write-Host "##vso[task.logissue type=warning]Health check failed but deployment continues"
+
+- task: Bash@3
+  displayName: 'Cleanup'
+  condition: always()
+  inputs:
+    targetType: 'inline'
+    workingDirectory: ${{ parameters.workingDirectory }}
+    script: |
+      echo "Cleaning up temporary files..."
+      rm -f tfplan
+      echo "Cleanup completed"

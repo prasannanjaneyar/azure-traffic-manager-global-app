@@ -1,0 +1,15 @@
+variables:
+  TF_STATE_RESOURCE_GROUP: 'tfstate-rg'
+  TF_STATE_STORAGE_ACCOUNT: 'tfstatedevopsXXXX'  # Replace with your actual storage account
+  TF_STATE_CONTAINER: 'tfstate'
+  ENVIRONMENT_NAME: 'prod'
+  
+  # Environment-specific settings
+  APP_SERVICE_SKU: 'P1v3'
+  TRAFFIC_MANAGER_DNS_NAME: 'globalapp-prod'
+  PRIMARY_LOCATION: 'East US'
+  SECONDARY_LOCATION: 'West Europe'
+  
+  # Feature flags
+  ENABLE_APP_GATEWAY: 'true'
+  ENABLE_MONITORING: 'true'

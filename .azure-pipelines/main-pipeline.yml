@@ -1,0 +1,211 @@
+trigger:
+  branches:
+    include:
+    - main
+    - develop
+    - feature/*
+  paths:
+    include:
+    - terraform/*
+    - azure-pipelines/*
+
+pr:
+  branches:
+    include:
+    - main
+    - develop
+  paths:
+    include:
+    - terraform/*
+
+variables:
+  - name: terraformVersion
+    value: '1.6.6'
+  - name: vmImageName
+    value: 'ubuntu-latest'
+  - name: azureServiceConnection
+    value: 'azure-terraform-service-connection'
+
+stages:
+# ==========================================
+# VALIDATION AND SECURITY STAGE
+# ==========================================
+- stage: Validate
+  displayName: 'Validate and Security Scan'
+  jobs:
+  - job: SecurityScan
+    displayName: 'Security and Compliance Scan'
+    pool:
+      vmImage: $(vmImageName)
+    steps:
+    - checkout: self
+      displayName: 'Checkout Repository'
+
+    - task: TerraformInstaller@1
+      displayName: 'Install Terraform'
+      inputs:
+        terraformVersion: $(terraformVersion)
+
+    - task: Bash@3
+      displayName: 'Terraform Format Check'
+      inputs:
+        targetType: 'inline'
+        script: |
+          terraform fmt -check -recursive terraform/
+          if [ $? -ne 0 ]; then
+            echo "##vso[task.logissue type=error]Terraform files are not properly formatted"
+            echo "Please run 'terraform fmt -recursive terraform/' to fix formatting"
+            exit 1
+          fi
+
+    - task: Bash@3
+      displayName: 'Install TFSec'
+      inputs:
+        targetType: 'inline'
+        script: |
+          curl -s https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh | bash
+          sudo mv tfsec /usr/local/bin/
+
+    - task: Bash@3
+      displayName: 'Run TFSec Security Scan'
+      inputs:
+        targetType: 'inline'
+        script: |
+          cd terraform/
+          tfsec . --format=junit --out=tfsec-results.xml || true
+          tfsec . --format=json --out=tfsec-results.json || true
+          tfsec . || echo "Security scan completed with findings"
+
+    - task: PublishTestResults@2
+      displayName: 'Publish Security Scan Results'
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: 'terraform/tfsec-results.xml'
+        failTaskOnFailedTests: false
+        testRunTitle: 'TFSec Security Scan'
+
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish Security Results'
+      inputs:
+        pathToPublish: 'terraform/tfsec-results.json'
+        artifactName: 'security-scan-results'
+
+  - job: TerraformValidate
+    displayName: 'Terraform Validation'
+    pool:
+      vmImage: $(vmImageName)
+    steps:
+    - template: templates/terraform-validation.yml
+
+# ==========================================
+# GLOBAL INFRASTRUCTURE STAGE
+# ==========================================
+- stage: DeployGlobal
+  displayName: 'Deploy Global Infrastructure'
+  dependsOn: Validate
+  condition: and(succeeded(), or(eq(variables['Build.SourceBranch'], 'refs/heads/main'), eq(variables['Build.SourceBranch'], 'refs/heads/develop')))
+  jobs:
+  - deployment: GlobalInfrastructure
+    displayName: 'Deploy Global Resources'
+    environment: 'global'
+    pool:
+      vmImage: $(vmImageName)
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - template: templates/terraform-deploy.yml
+            parameters:
+              environment: 'global'
+              serviceConnection: $(azureServiceConnection)
+              terraformVersion: $(terraformVersion)
+              workingDirectory: 'terraform/global'
+
+# ==========================================
+# DEVELOPMENT ENVIRONMENT STAGE
+# ==========================================
+- stage: DeployDev
+  displayName: 'Deploy Development'
+  dependsOn: DeployGlobal
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/develop'))
+  variables:
+  - template: variables/dev.yml
+  jobs:
+  - deployment: DevelopmentEnvironment
+    displayName: 'Deploy to Development'
+    environment: 'development'
+    pool:
+      vmImage: $(vmImageName)
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - template: templates/terraform-deploy.yml
+            parameters:
+              environment: 'dev'
+              serviceConnection: $(azureServiceConnection)
+              terraformVersion: $(terraformVersion)
+              workingDirectory: 'terraform/environments/dev'
+
+# ==========================================
+# STAGING ENVIRONMENT STAGE
+# ==========================================
+- stage: DeployStaging
+  displayName: 'Deploy Staging'
+  dependsOn: DeployGlobal
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  variables:
+  - template: variables/staging.yml
+  jobs:
+  - deployment: StagingEnvironment
+    displayName: 'Deploy to Staging'
+    environment: 'staging'
+    pool:
+      vmImage: $(vmImageName)
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - template: templates/terraform-deploy.yml
+            parameters:
+              environment: 'staging'
+              serviceConnection: $(azureServiceConnection)
+              terraformVersion: $(terraformVersion)
+              workingDirectory: 'terraform/environments/staging'
+
+# ==========================================
+# PRODUCTION ENVIRONMENT STAGE
+# ==========================================
+- stage: DeployProduction
+  displayName: 'Deploy Production'
+  dependsOn: DeployStaging
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  variables:
+  - template: variables/prod.yml
+  jobs:
+  - deployment: ProductionEnvironment
+    displayName: 'Deploy to Production'
+    environment: 'production'
+    pool:
+      vmImage: $(vmImageName)
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - template: templates/terraform-deploy.yml
+            parameters:
+              environment: 'prod'
+              serviceConnection: $(azureServiceConnection)
+              terraformVersion: $(terraformVersion)
+              workingDirectory: 'terraform/environments/prod'
+              runHealthCheck: true
+
+          - task: PowerShell@2
+            displayName: 'Post-Deployment Notification'
+            inputs:
+              targetType: 'inline'
+              script: |
+                Write-Host "Production deployment completed successfully!"
+                Write-Host "Build ID: $(Build.BuildId)"
+                Write-Host "Commit: $(Build.SourceVersion)"
+                Write-Host "Timestamp: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')"
