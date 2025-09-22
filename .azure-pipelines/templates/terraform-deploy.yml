@@ -128,7 +128,16 @@ steps:
         } else {
           Write-Host "⚠️ Terraform outputs file not found, skipping health check"
         }
-
+# Add this task right after the Terraform Plan task:
+- task: Bash@3
+  displayName: 'Generate Plan Summary'
+  inputs:
+    targetType: 'inline'
+    workingDirectory: ${{ parameters.workingDirectory }}
+    script: |
+      terraform show -no-color tfplan > tfplan.txt
+      echo "✅ Plan summary generated: tfplan.txt"
+      
 - task: Bash@3
   displayName: 'Cleanup'
   condition: always()
