@@ -27,12 +27,13 @@ steps:
     scriptType: 'bash'
     scriptLocation: 'inlineScript'
     workingDirectory: ${{ parameters.workingDirectory }}
+    addSpnToEnvironment: true  # ✅ CRITICAL FIX - This exposes Service Principal variables
     inlineScript: |
       echo "Initializing Terraform for ${{ parameters.environment }}..."
       
-      # Set Terraform authentication environment variables
-      export ARM_CLIENT_ID=$servicePrincipalId
-      export ARM_CLIENT_SECRET=$servicePrincipalKey
+      # Set Terraform authentication environment variables using exposed Azure DevOps variables
+      export ARM_CLIENT_ID=$AZURE_CLIENT_ID
+      export ARM_CLIENT_SECRET=$AZURE_CLIENT_SECRET
       export ARM_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
       export ARM_TENANT_ID=$(az account show --query tenantId -o tsv)
       export ARM_USE_CLI=false
@@ -40,6 +41,15 @@ steps:
       echo "ARM_SUBSCRIPTION_ID: $ARM_SUBSCRIPTION_ID"
       echo "ARM_TENANT_ID: $ARM_TENANT_ID"
       echo "ARM_CLIENT_ID: $ARM_CLIENT_ID"
+      echo "ARM_USE_CLI: $ARM_USE_CLI"
+      
+      # Verify credentials are available
+      if [ -z "$ARM_CLIENT_ID" ] || [ -z "$ARM_CLIENT_SECRET" ]; then
+        echo "❌ Service Principal credentials not available"
+        echo "Available environment variables:"
+        env | grep -E "(AZURE_|ARM_)" | sort
+        exit 1
+      fi
       
       terraform init \
         -backend-config="resource_group_name=$(TF_STATE_RESOURCE_GROUP)" \
@@ -61,12 +71,13 @@ steps:
     scriptType: 'bash'
     scriptLocation: 'inlineScript'
     workingDirectory: ${{ parameters.workingDirectory }}
+    addSpnToEnvironment: true  # ✅ CRITICAL FIX
     inlineScript: |
       echo "Creating Terraform plan for ${{ parameters.environment }}..."
       
       # Set Terraform authentication environment variables
-      export ARM_CLIENT_ID=$servicePrincipalId
-      export ARM_CLIENT_SECRET=$servicePrincipalKey
+      export ARM_CLIENT_ID=$AZURE_CLIENT_ID
+      export ARM_CLIENT_SECRET=$AZURE_CLIENT_SECRET
       export ARM_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
       export ARM_TENANT_ID=$(az account show --query tenantId -o tsv)
       export ARM_USE_CLI=false
@@ -108,12 +119,13 @@ steps:
     scriptType: 'bash'
     scriptLocation: 'inlineScript'
     workingDirectory: ${{ parameters.workingDirectory }}
+    addSpnToEnvironment: true  # ✅ CRITICAL FIX
     inlineScript: |
       echo "Applying Terraform plan for ${{ parameters.environment }}..."
       
       # Set Terraform authentication environment variables
-      export ARM_CLIENT_ID=$servicePrincipalId
-      export ARM_CLIENT_SECRET=$servicePrincipalKey
+      export ARM_CLIENT_ID=$AZURE_CLIENT_ID
+      export ARM_CLIENT_SECRET=$AZURE_CLIENT_SECRET
       export ARM_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
       export ARM_TENANT_ID=$(az account show --query tenantId -o tsv)
       export ARM_USE_CLI=false
