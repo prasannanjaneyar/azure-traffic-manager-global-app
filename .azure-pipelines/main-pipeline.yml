@@ -1,7 +1,7 @@
 trigger:
   branches:
     include:
-    - main
+    - master
     - develop
     - feature/*
   paths:
@@ -12,7 +12,7 @@ trigger:
 pr:
   branches:
     include:
-    - main
+    - master
     - develop
   paths:
     include:
@@ -124,54 +124,54 @@ stages:
 # ==========================================
 # DEVELOPMENT ENVIRONMENT STAGE
 # ==========================================
-- stage: DeployDev
-  displayName: 'Deploy Development'
-  dependsOn: DeployGlobal
-  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/develop'))
-  variables:
-  - template: variables/dev.yml
-  jobs:
-  - deployment: DevelopmentEnvironment
-    displayName: 'Deploy to Development'
-    environment: 'development'
-    pool:
-      vmImage: $(vmImageName)
-    strategy:
-      runOnce:
-        deploy:
-          steps:
-          - template: templates/terraform-deploy.yml
-            parameters:
-              environment: 'dev'
-              serviceConnection: $(azureServiceConnection)
-              terraformVersion: $(terraformVersion)
-              workingDirectory: 'terraform/environments/dev'
+# - stage: DeployDev
+#   displayName: 'Deploy Development'
+#   dependsOn: DeployGlobal
+#   condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/develop'))
+#   variables:
+#   - template: variables/dev.yml
+#   jobs:
+#   - deployment: DevelopmentEnvironment
+#     displayName: 'Deploy to Development'
+#     environment: 'development'
+#     pool:
+#       vmImage: $(vmImageName)
+#     strategy:
+#       runOnce:
+#         deploy:
+#           steps:
+#           - template: templates/terraform-deploy.yml
+#             parameters:
+#               environment: 'dev'
+#               serviceConnection: $(azureServiceConnection)
+#               terraformVersion: $(terraformVersion)
+#               workingDirectory: 'terraform/environments/dev'
 
-# ==========================================
-# STAGING ENVIRONMENT STAGE
-# ==========================================
-- stage: DeployStaging
-  displayName: 'Deploy Staging'
-  dependsOn: DeployGlobal
-  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
-  variables:
-  - template: variables/staging.yml
-  jobs:
-  - deployment: StagingEnvironment
-    displayName: 'Deploy to Staging'
-    environment: 'staging'
-    pool:
-      vmImage: $(vmImageName)
-    strategy:
-      runOnce:
-        deploy:
-          steps:
-          - template: templates/terraform-deploy.yml
-            parameters:
-              environment: 'staging'
-              serviceConnection: $(azureServiceConnection)
-              terraformVersion: $(terraformVersion)
-              workingDirectory: 'terraform/environments/staging'
+# # ==========================================
+# # STAGING ENVIRONMENT STAGE
+# # ==========================================
+# - stage: DeployStaging
+#   displayName: 'Deploy Staging'
+#   dependsOn: DeployGlobal
+#   condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+#   variables:
+#   - template: variables/staging.yml
+#   jobs:
+#   - deployment: StagingEnvironment
+#     displayName: 'Deploy to Staging'
+#     environment: 'staging'
+#     pool:
+#       vmImage: $(vmImageName)
+#     strategy:
+#       runOnce:
+#         deploy:
+#           steps:
+#           - template: templates/terraform-deploy.yml
+#             parameters:
+#               environment: 'staging'
+#               serviceConnection: $(azureServiceConnection)
+#               terraformVersion: $(terraformVersion)
+#               workingDirectory: 'terraform/environments/staging'
 
 # ==========================================
 # PRODUCTION ENVIRONMENT STAGE
