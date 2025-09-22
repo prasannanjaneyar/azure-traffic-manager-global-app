@@ -1,6 +1,6 @@
 variables:
   TF_STATE_RESOURCE_GROUP: 'tfstate-rg'
-  TF_STATE_STORAGE_ACCOUNT: 'tfstatedevopsXXXX'  # Replace with your actual storage account
+  TF_STATE_STORAGE_ACCOUNT: 'tfstateaccount09876'  # Replace with your actual storage account
   TF_STATE_CONTAINER: 'tfstate'
   ENVIRONMENT_NAME: 'prod'
   
